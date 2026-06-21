@@ -37,14 +37,16 @@ jobs:
 
             # The traffic endpoints require push access; errors are silenced so
             # repos the PAT can't read don't abort the whole run.
-            REFERRERS=$(gh api "repos/project-minigraf/$REPO/traffic/referrers" \
-              2>/dev/null || echo '[]')
-            VIEWS=$(gh api "repos/project-minigraf/$REPO/traffic/views" \
-              2>/dev/null || echo '{"count":0,"uniques":0,"views":[]}')
-            CLONES=$(gh api "repos/project-minigraf/$REPO/traffic/clones" \
-              2>/dev/null || echo '{"count":0,"uniques":0,"clones":[]}')
-            PATHS=$(gh api "repos/project-minigraf/$REPO/traffic/popular/paths" \
-              2>/dev/null || echo '[]')
+            # NOTE: || must be outside $() so the fallback overwrites rather than
+            # appending to the captured stdout (which would produce invalid JSON).
+            REFERRERS=$(gh api "repos/project-minigraf/$REPO/traffic/referrers" 2>/dev/null) \
+              || REFERRERS='[]'
+            VIEWS=$(gh api "repos/project-minigraf/$REPO/traffic/views" 2>/dev/null) \
+              || VIEWS='{"count":0,"uniques":0,"views":[]}'
+            CLONES=$(gh api "repos/project-minigraf/$REPO/traffic/clones" 2>/dev/null) \
+              || CLONES='{"count":0,"uniques":0,"clones":[]}'
+            PATHS=$(gh api "repos/project-minigraf/$REPO/traffic/popular/paths" 2>/dev/null) \
+              || PATHS='[]'
 
             SNAPSHOT=$(echo "$SNAPSHOT" | jq \
               --arg repo "$REPO" \
@@ -63,7 +65,7 @@ jobs:
           # Fetch existing gist content (JSON array); start fresh if missing or malformed
           EXISTING=$(gh api "gists/$GIST_ID" \
             --jq '.files["traffic.json"].content // "[]"' \
-            2>/dev/null || echo '[]')
+            2>/dev/null) || EXISTING='[]'
 
           if ! echo "$EXISTING" | jq -e 'type == "array"' > /dev/null 2>&1; then
             echo "  ⚠ Existing gist content is not a JSON array — starting fresh."
