@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>project-minigraf · Traffic</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #7d8590; --accent: #388bfd;
+    --green: #3fb950; --orange: #d29922;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; padding: 24px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .config { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 24px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .config label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .config input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; padding: 6px 10px; width: 280px; }
+  .config input:focus { outline: none; border-color: var(--accent); }
+  button { background: var(--accent); border: none; border-radius: 6px; color: #fff; cursor: pointer; font-size: 13px; font-weight: 600; padding: 7px 16px; }
+  button:hover { opacity: .85; }
+  .error { background: #3d1f1f; border: 1px solid #6e2a2a; border-radius: 6px; color: #f85149; font-size: 13px; padding: 12px 16px; margin-bottom: 16px; }
+  .section { margin-bottom: 32px; }
+  .section h2 { font-size: 15px; font-weight: 600; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; text-align: left; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+  td { padding: 7px 12px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--surface); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar-cell { width: 120px; }
+  .bar-wrap { background: var(--border); border-radius: 3px; height: 8px; overflow: hidden; }
+  .bar { background: var(--accent); height: 100%; border-radius: 3px; transition: width .3s; }
+  .bar.green { background: var(--green); }
+  .spark { display: flex; align-items: flex-end; gap: 2px; height: 24px; }
+  .spark-col { background: var(--accent); width: 6px; border-radius: 2px 2px 0 0; min-height: 2px; }
+  .tag { display: inline-block; background: var(--border); border-radius: 4px; font-size: 11px; padding: 1px 6px; color: var(--muted); }
+  .day-nav { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .day-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--muted); cursor: pointer; font-size: 12px; padding: 4px 10px; }
+  .day-btn.active { border-color: var(--accent); color: var(--accent); }
+  .day-btn:hover:not(.active) { border-color: var(--text); color: var(--text); }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 720px) { .grid-2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>project-minigraf · Traffic</h1>
+<p class="subtitle">Daily snapshot from the org-wide traffic workflow</p>
+
+<div class="config">
+  <div>
+    <label>GitHub PAT (repo + gist scopes)</label>
+    <input type="password" id="pat" placeholder="ghp_…">
+  </div>
+  <div>
+    <label>Gist ID</label>
+    <input type="text" id="gist" placeholder="a1b2c3d4e5f6…">
+  </div>
+  <button id="load-btn">Load</button>
+</div>
+
+<div id="error" class="error" style="display:none"></div>
+<div id="app"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// Persist settings
+const saved = JSON.parse(localStorage.getItem('mg-traffic') || '{}');
+if (saved.pat)  $('pat').value  = saved.pat;
+if (saved.gist) $('gist').value = saved.gist;
+
+$('load-btn').addEventListener('click', load);
+document.addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+
+async function load() {
+  const pat    = $('pat').value.trim();
+  const gistId = $('gist').value.trim();
+  if (!pat || !gistId) return showError('Both PAT and Gist ID are required.');
+
+  localStorage.setItem('mg-traffic', JSON.stringify({ pat, gist: gistId }));
+  $('load-btn').textContent = 'Loading…';
+  $('load-btn').disabled = true;
+  hideError();
+
+  try {
+    const r = await fetch(`https://api.github.com/gists/${gistId}`, {
+      headers: { Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json' }
+    });
+    if (!r.ok) throw new Error(`GitHub API ${r.status}: ${r.statusText}`);
+    const g = await r.json();
+    const file = g.files['traffic.json'];
+    if (!file) throw new Error('Gist does not contain traffic.json');
+    const snapshots = JSON.parse(file.content);
+    if (!Array.isArray(snapshots) || snapshots.length === 0) throw new Error('No snapshots found in gist.');
+    render(snapshots);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    $('load-btn').textContent = 'Load';
+    $('load-btn').disabled = false;
+  }
+}
+
+let currentDay = null;
+
+function render(snapshots) {
+  // Sort ascending by date
+  snapshots.sort((a, b) => a.captured_at.localeCompare(b.captured_at));
+  currentDay = currentDay || snapshots[snapshots.length - 1].captured_at;
+
+  const app = $('app');
+  app.innerHTML = '';
+
+  // Day picker
+  const nav = el('div', 'day-nav');
+  for (const s of snapshots) {
+    const btn = el('button', 'day-btn' + (s.captured_at === currentDay ? ' active' : ''));
+    btn.textContent = s.captured_at;
+    btn.onclick = () => { currentDay = s.captured_at; render(snapshots); };
+    nav.appendChild(btn);
+  }
+  app.appendChild(nav);
+
+  const snap = snapshots.find(s => s.captured_at === currentDay);
+
+  // ── Summary table ────────────────────────────────────────────────────────
+  const repos = Object.entries(snap.repos)
+    .map(([name, d]) => ({
+      name,
+      views:      d.views?.count   ?? 0,
+      viewU:      d.views?.uniques ?? 0,
+      clones:     d.clones?.count  ?? 0,
+      cloneU:     d.clones?.uniques ?? 0,
+    }))
+    .filter(r => r.views + r.clones > 0)
+    .sort((a, b) => b.views - a.views);
+
+  const maxV = Math.max(...repos.map(r => r.views), 1);
+  const maxC = Math.max(...repos.map(r => r.clones), 1);
+
+  const sec1 = section('Views & Clones');
+  const t1 = table(['Repository', 'Views', '', 'Uniques', 'Clones', '', 'Uniques'], [
+    'col-name', 'num', 'bar-cell', 'num', 'num', 'bar-cell', 'num'
+  ]);
+  for (const r of repos) {
+    t1.tBodies[0].appendChild(row([
+      r.name,
+      r.views,
+      bar(r.views, maxV, 'accent'),
+      r.viewU,
+      r.clones,
+      bar(r.clones, maxC, 'green'),
+      r.cloneU,
+    ]));
+  }
+  if (repos.length === 0) t1.tBodies[0].innerHTML = '<tr><td colspan="7" style="color:var(--muted);padding:16px">No view/clone data for this day.</td></tr>';
+  sec1.appendChild(t1);
+  app.appendChild(sec1);
+
+  // ── Referrers ────────────────────────────────────────────────────────────
+  const refMap = {};
+  for (const [, d] of Object.entries(snap.repos)) {
+    for (const ref of (d.referrers || [])) {
+      refMap[ref.referrer] = (refMap[ref.referrer] || 0) + ref.count;
+    }
+  }
+  const refs = Object.entries(refMap).sort((a, b) => b[1] - a[1]).slice(0, 20);
+  const maxR = refs[0]?.[1] || 1;
+
+  const sec2 = section('Top Referrers (all repos)');
+  const t2 = table(['Referrer', 'Views', ''], ['col-name', 'num', 'bar-cell']);
+  for (const [name, count] of refs) {
+    t2.tBodies[0].appendChild(row([name, count, bar(count, maxR, 'orange')]));
+  }
+  if (refs.length === 0) t2.tBodies[0].innerHTML = '<tr><td colspan="3" style="color:var(--muted);padding:16px">No referrer data for this day.</td></tr>';
+  sec2.appendChild(t2);
+  app.appendChild(sec2);
+
+  // ── Popular paths ─────────────────────────────────────────────────────────
+  const pathMap = {};
+  for (const [repo, d] of Object.entries(snap.repos)) {
+    for (const p of (d.paths || [])) {
+      const key = `${repo}${p.path}`;
+      pathMap[key] = { path: p.path, repo, count: (pathMap[key]?.count || 0) + p.count };
+    }
+  }
+  const paths = Object.values(pathMap).sort((a, b) => b.count - a.count).slice(0, 20);
+  const maxP = paths[0]?.count || 1;
+
+  const sec3 = section('Popular Paths (all repos)');
+  const t3 = table(['Repo', 'Path', 'Views', ''], ['col-tag', 'col-path', 'num', 'bar-cell']);
+  for (const p of paths) {
+    const tagEl = document.createElement('span');
+    tagEl.className = 'tag';
+    tagEl.textContent = p.repo;
+    t3.tBodies[0].appendChild(row([tagEl, p.path, p.count, bar(p.count, maxP, 'accent')]));
+  }
+  if (paths.length === 0) t3.tBodies[0].innerHTML = '<tr><td colspan="4" style="color:var(--muted);padding:16px">No path data for this day.</td></tr>';
+  sec3.appendChild(t3);
+  app.appendChild(sec3);
+
+  // ── Trend (if multiple days) ──────────────────────────────────────────────
+  if (snapshots.length > 1) {
+    const trendRepos = [...new Set(snapshots.flatMap(s => Object.keys(s.repos)))]
+      .map(name => {
+        const pts = snapshots.map(s => s.repos[name]?.views?.count ?? 0);
+        return { name, pts, total: pts.reduce((a, b) => a + b, 0) };
+      })
+      .filter(r => r.total > 0)
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 10);
+
+    if (trendRepos.length > 0) {
+      const maxTrend = Math.max(...trendRepos.flatMap(r => r.pts), 1);
+      const sec4 = section(`View Trend (${snapshots.length} days)`);
+      const t4 = table(
+        ['Repository', ...snapshots.map(s => s.captured_at.slice(5))],
+        ['col-name', ...snapshots.map(() => 'num spark-col-cell')]
+      );
+      for (const r of trendRepos) {
+        const cells = [r.name, ...r.pts.map(v => {
+          const w = el('div', 'spark');
+          const c = el('div', 'spark-col');
+          c.style.height = Math.max(2, Math.round((v / maxTrend) * 24)) + 'px';
+          c.title = v;
+          w.appendChild(c);
+          return w;
+        })];
+        t4.tBodies[0].appendChild(row(cells));
+      }
+      sec4.appendChild(t4);
+      app.appendChild(sec4);
+    }
+  }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function el(tag, cls) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  return e;
+}
+
+function section(title) {
+  const s = el('div', 'section');
+  const h = el('h2'); h.textContent = title; s.appendChild(h);
+  return s;
+}
+
+function table(headers, classes) {
+  const t = document.createElement('table');
+  const thead = t.createTHead();
+  const hr = thead.insertRow();
+  headers.forEach((h, i) => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    if (classes[i]) th.className = classes[i];
+    hr.appendChild(th);
+  });
+  t.createTBody();
+  return t;
+}
+
+function row(cells) {
+  const tr = document.createElement('tr');
+  cells.forEach(c => {
+    const td = document.createElement('td');
+    if (c instanceof HTMLElement) {
+      td.appendChild(c);
+    } else if (typeof c === 'number') {
+      td.className = 'num';
+      td.textContent = c.toLocaleString();
+    } else {
+      td.textContent = c;
+    }
+    tr.appendChild(td);
+  });
+  return tr;
+}
+
+function bar(val, max, color) {
+  const wrap = el('div', 'bar-cell');
+  const bw   = el('div', 'bar-wrap');
+  const b    = el('div', 'bar' + (color === 'green' ? ' green' : color === 'orange' ? '' : ''));
+  if (color === 'orange') b.style.background = 'var(--orange)';
+  b.style.width = Math.round((val / max) * 100) + '%';
+  bw.appendChild(b); wrap.appendChild(bw);
+  return wrap;
+}
+
+function showError(msg) { $('error').textContent = msg; $('error').style.display = ''; }
+function hideError()    { $('error').style.display = 'none'; }
+
+// Auto-load if credentials already saved
+if (saved.pat && saved.gist) load();
+</script>
+</body>
+</html>
