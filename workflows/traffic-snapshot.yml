@@ -1,0 +1,85 @@
+name: Traffic Snapshot
+
+on:
+  schedule:
+    - cron: '0 7 * * *'  # 07:00 UTC daily (GitHub traffic API resets on UTC day)
+  workflow_dispatch:       # allow manual runs
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    name: snapshot / org traffic
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Capture traffic and update gist
+        env:
+          GH_TOKEN: ${{ secrets.TRAFFIC_PAT }}
+          GIST_ID: ${{ secrets.TRAFFIC_GIST_ID }}
+        run: |
+          set -euo pipefail
+
+          TODAY=$(date -u +%Y-%m-%d)
+          echo "Capturing traffic snapshot for $TODAY..."
+
+          # All public repos in the org
+          REPOS=$(gh repo list project-minigraf \
+            --no-archived --json name --limit 100 \
+            --jq '.[].name')
+
+          # Build today's snapshot object
+          SNAPSHOT=$(jq -n --arg date "$TODAY" '{captured_at: $date, repos: {}}')
+
+          for REPO in $REPOS; do
+            echo "  → $REPO"
+
+            # The traffic endpoints require push access; errors are silenced so
+            # repos the PAT can't read don't abort the whole run.
+            REFERRERS=$(gh api "repos/project-minigraf/$REPO/traffic/referrers" \
+              2>/dev/null || echo '[]')
+            VIEWS=$(gh api "repos/project-minigraf/$REPO/traffic/views" \
+              2>/dev/null || echo '{"count":0,"uniques":0,"views":[]}')
+            CLONES=$(gh api "repos/project-minigraf/$REPO/traffic/clones" \
+              2>/dev/null || echo '{"count":0,"uniques":0,"clones":[]}')
+            PATHS=$(gh api "repos/project-minigraf/$REPO/traffic/popular/paths" \
+              2>/dev/null || echo '[]')
+
+            SNAPSHOT=$(echo "$SNAPSHOT" | jq \
+              --arg repo "$REPO" \
+              --argjson referrers "$REFERRERS" \
+              --argjson views "$VIEWS" \
+              --argjson clones "$CLONES" \
+              --argjson paths "$PATHS" \
+              '.repos[$repo] = {
+                referrers: $referrers,
+                views: $views,
+                clones: $clones,
+                paths: $paths
+              }')
+          done
+
+          # Fetch existing gist content (JSON array); start fresh if missing or malformed
+          EXISTING=$(gh api "gists/$GIST_ID" \
+            --jq '.files["traffic.json"].content // "[]"' \
+            2>/dev/null || echo '[]')
+
+          if ! echo "$EXISTING" | jq -e 'type == "array"' > /dev/null 2>&1; then
+            echo "  ⚠ Existing gist content is not a JSON array — starting fresh."
+            EXISTING='[]'
+          fi
+
+          # Drop any same-day entry so re-runs are idempotent, then append today
+          UPDATED=$(echo "$EXISTING" | jq \
+            --arg date "$TODAY" \
+            --argjson snapshot "$SNAPSHOT" \
+            '[.[] | select(.captured_at != $date)] + [$snapshot]')
+
+          # Push updated array back to the gist
+          jq -n --arg content "$UPDATED" \
+            '{"files": {"traffic.json": {"content": $content}}}' | \
+            gh api --method PATCH "gists/$GIST_ID" --input -
+
+          ENTRY_COUNT=$(echo "$UPDATED" | jq 'length')
+          echo "Done. Gist now holds $ENTRY_COUNT daily snapshot(s)."
