@@ -79,9 +79,14 @@ jobs:
             '[.[] | select(.captured_at != $date)] + [$snapshot]')
 
           # Push updated array back to the gist
-          jq -n --arg content "$UPDATED" \
+          # Write to a temp file first to avoid "Argument list too long" when
+          # the accumulated JSON exceeds the OS shell-argument size limit.
+          UPDATED_FILE=$(mktemp)
+          echo "$UPDATED" > "$UPDATED_FILE"
+          jq -n --rawfile content "$UPDATED_FILE" \
             '{"files": {"traffic.json": {"content": $content}}}' | \
             gh api --method PATCH "gists/$GIST_ID" --input -
+          rm -f "$UPDATED_FILE"
 
           ENTRY_COUNT=$(echo "$UPDATED" | jq 'length')
           echo "Done. Gist now holds $ENTRY_COUNT daily snapshot(s)."
