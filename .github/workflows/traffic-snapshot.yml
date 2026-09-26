@@ -86,14 +86,15 @@ jobs:
             --argjson snapshot "$SNAPSHOT" \
             '[.[] | select(.captured_at != $date)] + [$snapshot]')
 
-          # Push updated array back to the gist
+          # Push updated array back to the gist. The response echoes the whole
+          # gist, so drop stdout; errors still go to stderr and fail the step.
           # Write to a temp file first to avoid "Argument list too long" when
           # the accumulated JSON exceeds the OS shell-argument size limit.
           UPDATED_FILE=$(mktemp)
           echo "$UPDATED" > "$UPDATED_FILE"
           jq -n --rawfile content "$UPDATED_FILE" \
             '{"files": {"traffic.json": {"content": $content}}}' | \
-            gh api --method PATCH "gists/$GIST_ID" --input -
+            gh api --method PATCH "gists/$GIST_ID" --input - > /dev/null
           rm -f "$UPDATED_FILE"
 
           ENTRY_COUNT=$(echo "$UPDATED" | jq 'length')
