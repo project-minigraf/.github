@@ -32,21 +32,29 @@ jobs:
           # Build today's snapshot object
           SNAPSHOT=$(jq -n --arg date "$TODAY" '{captured_at: $date, repos: {}}')
 
+          # Fetch one traffic endpoint. The traffic endpoints require push
+          # access, so a failure must not abort the whole run. On failure,
+          # print a warning with the API error and return the fallback value.
+          # NOTE: || must be outside $() so the fallback overwrites rather than
+          # appending to the captured stdout (which would produce invalid JSON).
+          fetch_traffic() {
+            local repo=$1 endpoint=$2 fallback=$3 out err
+            err=$(mktemp)
+            out=$(gh api "repos/project-minigraf/$repo/traffic/$endpoint" 2>"$err") \
+              || { echo "::warning::$repo traffic/$endpoint failed, using fallback $fallback: $(tr '\n' ' ' < "$err")" >&2
+                   out=$fallback; }
+            rm -f "$err"
+            echo "$out"
+          }
+
           for REPO in $REPOS; do
             echo "  → $REPO"
 
-            # The traffic endpoints require push access; errors are silenced so
-            # repos the PAT can't read don't abort the whole run.
-            # NOTE: || must be outside $() so the fallback overwrites rather than
-            # appending to the captured stdout (which would produce invalid JSON).
-            REFERRERS=$(gh api "repos/project-minigraf/$REPO/traffic/referrers" 2>/dev/null) \
-              || REFERRERS='[]'
-            VIEWS=$(gh api "repos/project-minigraf/$REPO/traffic/views" 2>/dev/null) \
-              || VIEWS='{"count":0,"uniques":0,"views":[]}'
-            CLONES=$(gh api "repos/project-minigraf/$REPO/traffic/clones" 2>/dev/null) \
-              || CLONES='{"count":0,"uniques":0,"clones":[]}'
-            PATHS=$(gh api "repos/project-minigraf/$REPO/traffic/popular/paths" 2>/dev/null) \
-              || PATHS='[]'
+            REFERRERS=$(fetch_traffic "$REPO" popular/referrers '[]')
+            VIEWS=$(fetch_traffic "$REPO" views '{"count":0,"uniques":0,"views":[]}')
+            CLONES=$(fetch_traffic "$REPO" clones '{"count":0,"uniques":0,"clones":[]}')
+            PATHS=$(fetch_traffic "$REPO" popular/paths '[]')
+            echo "    referrers=$(echo "$REFERRERS" | jq length) views=$(echo "$VIEWS" | jq .count) clones=$(echo "$CLONES" | jq .count) paths=$(echo "$PATHS" | jq length)"
 
             SNAPSHOT=$(echo "$SNAPSHOT" | jq \
               --arg repo "$REPO" \
@@ -78,14 +86,15 @@ jobs:
             --argjson snapshot "$SNAPSHOT" \
             '[.[] | select(.captured_at != $date)] + [$snapshot]')
 
-          # Push updated array back to the gist
+          # Push updated array back to the gist. The response echoes the whole
+          # gist, so drop stdout; errors still go to stderr and fail the step.
           # Write to a temp file first to avoid "Argument list too long" when
           # the accumulated JSON exceeds the OS shell-argument size limit.
           UPDATED_FILE=$(mktemp)
           echo "$UPDATED" > "$UPDATED_FILE"
           jq -n --rawfile content "$UPDATED_FILE" \
             '{"files": {"traffic.json": {"content": $content}}}' | \
-            gh api --method PATCH "gists/$GIST_ID" --input -
+            gh api --method PATCH "gists/$GIST_ID" --input - > /dev/null
           rm -f "$UPDATED_FILE"
 
           ENTRY_COUNT=$(echo "$UPDATED" | jq 'length')
