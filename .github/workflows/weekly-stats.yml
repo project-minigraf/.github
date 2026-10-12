@@ -1,0 +1,50 @@
+name: Weekly Stats
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'  # 07:00 UTC Monday: covers Monday to Sunday of the week before
+  workflow_dispatch:       # allow manual runs
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    name: report / downloads and traffic
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build summary
+        env:
+          # The traffic endpoints need push access, which GITHUB_TOKEN lacks
+          # outside this repo.
+          GH_TOKEN: ${{ secrets.TRAFFIC_PAT }}
+        run: tools/weekly-stats.sh > summary.md
+
+      - name: Open this week's issue and close the previous one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSIGNEE: adityamukho
+          LABEL: weekly-stats
+        run: |
+          set -euo pipefail
+
+          gh label create "$LABEL" --color 0e8a16 \
+            --description "Weekly download and traffic summary" 2>/dev/null || true
+
+          PREVIOUS=$(gh issue list --label "$LABEL" --state open --json number --jq '.[].number')
+
+          WEEK_END=$(date -u -d yesterday +%F)
+          URL=$(gh issue create \
+            --title "Weekly stats: week ending $WEEK_END" \
+            --label "$LABEL" \
+            --assignee "$ASSIGNEE" \
+            --body-file summary.md)
+          echo "Opened $URL"
+
+          for n in $PREVIOUS; do
+            gh issue close "$n" --comment "Superseded by $URL"
+          done
